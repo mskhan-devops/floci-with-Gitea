@@ -1,0 +1,79 @@
+networks:
+  cicd-bridge:
+    name: cicd-bridge
+    driver: bridge
+
+services:
+  # 1. Local AWS Emulator (Floci)
+  floci:
+    image: floci/floci:latest
+    container_name: floci
+    ports:
+      - "4566:4566"
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Required for Floci Lambda/RDS containers
+    networks:
+      - cicd-bridge
+
+  # 2. Local Git Platform (Gitea or swap out for forgejo/forgejo:latest)
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__actions__ENABLED=true
+      # Shared registration token; must match the runner's value below
+      - GITEA_RUNNER_REGISTRATION_TOKEN=5aed3959dee0cca7b3063187d69cfab4645c141a51372dac
+      # Advertise the host-mapped SSH port so clone URLs are usable from the host
+      - GITEA__server__SSH_PORT=2222
+      - GITEA__server__SSH_LISTEN_PORT=22
+    restart: always
+    ports:
+      - "3000:3000"
+      - "2222:22"
+    volumes:
+      - gitea-data:/data
+    networks:
+      - cicd-bridge
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # 3. GitHub Actions Compatible CI/CD Runner
+  gitea-runner:
+    image: gitea/act_runner:latest
+    container_name: gitea-runner
+    restart: always
+    depends_on:
+      gitea:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Required so the runner can spawn workflow containers
+      - runner-data:/data
+    environment:
+      - CONFIG_FILE=/data/config.yaml
+      # The runner and its job containers must use the internal address, not localhost
+      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_RUNNER_NAME=gitea-runner
+      # Shared registration token; must match the Gitea service's value above
+      - GITEA_RUNNER_REGISTRATION_TOKEN=5aed3959dee0cca7b3063187d69cfab4645c141a51372dac
+    # The image entrypoint is run.sh, so a plain `command` is ignored. Override the
+    # entrypoint to generate a valid config (with the shared network) first.
+    entrypoint: ["/sbin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        act_runner generate-config > /data/config.yaml
+        sed -i -E 's|^  network:.*|  network: "cicd-bridge"|' /data/config.yaml
+        exec run.sh
+    networks:
+      - cicd-bridge
+
+volumes:
+  gitea-data:
+  runner-data:
