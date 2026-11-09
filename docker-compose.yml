@@ -19,7 +19,9 @@ services:
 
   # 2. Local Git Platform (Gitea or swap out for forgejo/forgejo:latest)
   gitea:
-    image: gitea/gitea:latest
+    # Nightly is required: stable Gitea 1.28.3 does not ship the Actions OIDC
+    # provider (/api/actions/oidc). main-nightly (1.29.x dev) does.
+    image: gitea/gitea:main-nightly
     container_name: gitea
     environment:
       - USER_UID=1000
